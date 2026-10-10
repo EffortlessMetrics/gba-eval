@@ -1,31 +1,54 @@
 use anyhow::{bail, ensure, Context, Result};
 use gba_supplemental::{bundle, fixtures, measure, model::*};
-use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 fn usage() -> &'static str {
     "gba-supplemental commands:\n  case --rom ROM\n  counter-rom OUTPUT\n  fixture NAME OUTPUT.wasm\n  run --candidate WASM --rom ROM --case CASE.json --out NEW_DIR [--upstream-summary SUMMARY.json]\n  qualify NEW_DIR\n  verify BUNDLE [EXPECTED_SEAL]\n  report BUNDLE\n  reanalyze BUNDLE NEW_JSON\n\nThe binary bounds guest resources. Use the documented container wrapper to bound the host and deny network access. Provision/build separately."
 }
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut f = OpenOptions::new().create_new(true).write(true).open(path)?;
-    f.write_all(bytes)?; f.sync_all()?; Ok(())
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    Ok(())
 }
 fn flags(args: &[String], allowed: &[&str]) -> Result<BTreeMap<String, PathBuf>> {
     ensure!(args.len() % 2 == 0, "flags require values");
     let mut out = BTreeMap::new();
     for pair in args.chunks_exact(2) {
-        ensure!(allowed.contains(&pair[0].as_str()), "unknown flag {}", pair[0]);
-        ensure!(out.insert(pair[0].clone(), PathBuf::from(&pair[1])).is_none(), "duplicate flag {}", pair[0]);
+        ensure!(
+            allowed.contains(&pair[0].as_str()),
+            "unknown flag {}",
+            pair[0]
+        );
+        ensure!(
+            out.insert(pair[0].clone(), PathBuf::from(&pair[1]))
+                .is_none(),
+            "duplicate flag {}",
+            pair[0]
+        );
     }
     Ok(out)
 }
 fn main() {
-    if let Err(e) = run() { eprintln!("{e:#}"); std::process::exit(2); }
+    if let Err(e) = run() {
+        eprintln!("{e:#}");
+        std::process::exit(2);
+    }
 }
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(command) = args.first() else { bail!("{}", usage()); };
+    let Some(command) = args.first() else {
+        bail!("{}", usage());
+    };
     match command.as_str() {
-        "--help" | "help" => { println!("{}", usage()); }
+        "--help" | "help" => {
+            println!("{}", usage());
+        }
         "counter-rom" => {
             ensure!(args.len() == 2, "{}", usage());
             let bytes = fixtures::counter_rom();
@@ -46,13 +69,28 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&Case::new(&bytes))?);
         }
         "run" => {
-            let f = flags(&args[1..], &["--candidate","--rom","--case","--out","--upstream-summary"])?;
-            let candidate = read_bounded(f.get("--candidate").context("--candidate required")?, MAX_MODULE as u64)?;
+            let f = flags(
+                &args[1..],
+                &[
+                    "--candidate",
+                    "--rom",
+                    "--case",
+                    "--out",
+                    "--upstream-summary",
+                ],
+            )?;
+            let candidate = read_bounded(
+                f.get("--candidate").context("--candidate required")?,
+                MAX_MODULE as u64,
+            )?;
             let rom = read_bounded(f.get("--rom").context("--rom required")?, MAX_ROM as u64)?;
             let case_bytes = read_bounded(f.get("--case").context("--case required")?, 65536)?;
             let case: Case = serde_json::from_slice(&case_bytes)?;
             let out = f.get("--out").context("--out required")?;
-            let upstream = f.get("--upstream-summary").map(|p| read_bounded(p, 4*1024*1024)).transpose()?;
+            let upstream = f
+                .get("--upstream-summary")
+                .map(|p| read_bounded(p, 4 * 1024 * 1024))
+                .transpose()?;
             let observed = measure::execute(case, &candidate, &rom, "candidate")?;
             let seal = bundle::write_bundle(out, &candidate, &rom, &observed, upstream.as_deref())?;
             println!("bundle={} seal={seal}", out.display());
@@ -66,13 +104,14 @@ fn run() -> Result<()> {
         }
         "verify" => {
             ensure!((2..=3).contains(&args.len()), "{}", usage());
-            let (_, _, seal) = bundle::validate_bundle(Path::new(&args[1]), args.get(2).map(String::as_str))?;
+            let (_, _, seal) =
+                bundle::validate_bundle(Path::new(&args[1]), args.get(2).map(String::as_str))?;
             println!("valid bundle seal={seal}");
         }
         "report" => {
             ensure!(args.len() == 2, "{}", usage());
             bundle::validate_bundle(Path::new(&args[1]), None)?;
-            let report = read_bounded(&Path::new(&args[1]).join("report.md"), 1024*1024)?;
+            let report = read_bounded(&Path::new(&args[1]).join("report.md"), 1024 * 1024)?;
             print!("{}", std::str::from_utf8(&report)?);
         }
         "reanalyze" => {
