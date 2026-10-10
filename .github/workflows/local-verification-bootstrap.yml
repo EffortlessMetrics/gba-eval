@@ -1,0 +1,39 @@
+name: Local verification bootstrap
+on:
+  push:
+    branches: [work/local-verification-bootstrap]
+    paths: [.github/workflows/local-verification-bootstrap.yml]
+permissions:
+  contents: read
+jobs:
+  provision:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Provision the pinned Rust toolchain and dependency sources
+        run: |
+          rustup toolchain install 1.87.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+          cargo +1.87.0 fetch
+      - name: Package only public tools, dependency sources, and Git objects
+        run: |
+          mkdir _bootstrap
+          SYSROOT="$(rustc +1.87.0 --print sysroot)"
+          tar -czf _bootstrap/toolchain.tar.gz --exclude='./share/doc' --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff' --exclude='*.woff2' -C "$SYSROOT" .
+          tar -czf _bootstrap/registry.tar.gz -C "$HOME/.cargo" registry
+          git bundle create _bootstrap/repo.bundle --all
+          cp Cargo.lock _bootstrap/Cargo.lock
+          rustc +1.87.0 -Vv > _bootstrap/rustc.txt
+          git rev-parse HEAD > _bootstrap/source-commit.txt
+          sha256sum _bootstrap/toolchain.tar.gz _bootstrap/registry.tar.gz _bootstrap/repo.bundle _bootstrap/Cargo.lock > _bootstrap/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: local-verification-bootstrap
+          path: _bootstrap/
+          retention-days: 1
+          compression-level: 0
