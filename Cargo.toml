@@ -5,6 +5,7 @@ members = [
     "harness/grader",
     "harness/oracle",
     "harness/dump",
+    "harness/supplemental",
     # The baseline candidate. Workspace member so `cargo build` checks it
     # still compiles, but nothing in harness/ depends on it — the grader
     # only sees its compiled wasm, same as any other submission.
