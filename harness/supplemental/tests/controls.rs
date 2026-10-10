@@ -164,9 +164,13 @@ fn hand_assembled_rom_has_consistent_header_literals_and_branches() {
 #[test]
 fn hostile_schedules_are_bounded_before_allocating_validation_state() {
     let (_, _, mut o) = observed("good");
-    o.traces[0].schedule.push(Action::Frames { count: u32::MAX });
+    o.traces[0]
+        .schedule
+        .push(Action::Frames { count: u32::MAX });
     assert!(o.validate().is_err());
     let (_, _, mut o) = observed("good");
-    o.traces[0].schedule.push(Action::Frame { tag: "end".into() });
+    o.traces[0]
+        .schedule
+        .push(Action::Frame { tag: "end".into() });
     assert!(o.validate().is_err());
 }

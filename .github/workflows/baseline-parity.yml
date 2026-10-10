@@ -10,7 +10,7 @@ concurrency:
 jobs:
   baseline:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: '2'
       CARGO_PROFILE_DEV_DEBUG: '0'
@@ -37,12 +37,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo +1.87.0 build -p grader -p gba-supplemental 2>&1 | tee _baseline-receipts/fork-build.log
+          cargo +1.87.0 build --release -p grader -p gba-supplemental 2>&1 | tee _baseline-receipts/fork-build.log
+          mkdir -p _baseline-receipts/bin
+          cp target/release/grader _baseline-receipts/bin/fork-grader
           cp Cargo.lock _baseline-receipts/fork-Cargo.lock
           GIT_LFS_SKIP_SMUDGE=1 git worktree add --detach _baseline-stock 92b585e5a0f6c7533bf69b9a4348b517a1b735e0
           git -C _baseline-stock lfs checkout
           cp Cargo.lock _baseline-stock/Cargo.lock
-          (cd _baseline-stock && cargo +1.87.0 build --offline -p grader) 2>&1 | tee _baseline-receipts/stock-build.log
+          (cd _baseline-stock && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo +1.87.0 build --offline --release -p grader) 2>&1 | tee _baseline-receipts/stock-build.log
+          cp target/release/grader _baseline-receipts/bin/stock-grader
           cp _baseline-stock/Cargo.lock _baseline-receipts/stock-Cargo.lock
           cargo +1.87.0 tree -p grader -e features > _baseline-receipts/fork-dependency-tree.txt
           (cd _baseline-stock && cargo +1.87.0 tree --offline -p grader -e features) > _baseline-receipts/stock-dependency-tree.txt
@@ -50,8 +53,8 @@ jobs:
           sed "s|$PWD|SOURCE|g" _baseline-receipts/fork-dependency-tree.txt > _baseline-receipts/fork-tree-normalized.txt
           diff -u _baseline-receipts/stock-tree-normalized.txt _baseline-receipts/fork-tree-normalized.txt
           rustc +1.87.0 -Vv > _baseline-receipts/rustc.txt
-          sha256sum target/debug/grader _baseline-stock/target/debug/grader > _baseline-receipts/scorer-binaries.sha256
-          target/debug/gba-supplemental fixture blank _baseline-receipts/blank.wasm
+          sha256sum _baseline-receipts/bin/fork-grader _baseline-receipts/bin/stock-grader > _baseline-receipts/scorer-binaries.sha256
+          target/release/gba-supplemental fixture blank _baseline-receipts/blank.wasm
       - name: Grade both artifacts with stock repetitions and the fork
         shell: bash
         run: bash supplemental/baseline-ci.sh

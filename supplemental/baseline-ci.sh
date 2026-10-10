@@ -19,18 +19,22 @@ for specimen in gba_core_shim blank; do
         WASM="$OUT/blank.wasm"
     fi
     for repetition in stock-a stock-b stock-c fork; do
-        if [ "$repetition" = fork ]; then SOURCE="$ROOT"; else SOURCE="$ROOT/_baseline-stock"; fi
+        if [ "$repetition" = fork ]; then SOURCE="$ROOT"; SCORER="$OUT/bin/fork-grader"; else SOURCE="$ROOT/_baseline-stock"; SCORER="$OUT/bin/stock-grader"; fi
         NAME="$specimen-$repetition"
         mkdir "$OUT/$NAME"
         CID="$OUT/$NAME.cid"
-        timeout --kill-after=15s 600 docker run --rm --cidfile "$CID" \
+        START=$(date +%s)
+        echo "grading $NAME"
+        timeout --kill-after=15s 1200 docker run --rm --cidfile "$CID" \
             --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
             --memory 5g --memory-swap 5g --cpus 2 --pids-limit 64 \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m --user "$(id -u):$(id -g)" \
             --env RAYON_NUM_THREADS=1 --workdir /repo \
-            -v "$SOURCE:/repo:ro" -v "$WASM:/candidate.wasm:ro" -v "$OUT/$NAME:/out:rw" \
-            "$IMAGE" /repo/target/debug/grader /candidate.wasm corpus/ /out \
+            -v "$SCORER:/grader:ro" -v "$SOURCE:/repo:ro" -v "$WASM:/candidate.wasm:ro" -v "$OUT/$NAME:/out:rw" \
+            "$IMAGE" /grader /candidate.wasm corpus/ /out \
             > "$OUT/$NAME.log" 2>&1
+        END=$(date +%s)
+        printf '%s,%s\n' "$NAME" "$((END - START))" >> "$OUT/durations.csv"
         cleanup
         CID=""
     done
