@@ -1,0 +1,83 @@
+name: Supplemental evidence
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: supplemental-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Provision Rust
+        run: rustup toolchain install 1.87.0 --profile minimal --component rustfmt --component clippy
+      - name: Compile and test the supplemental crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir _supplemental-receipts
+          rustc +1.87.0 -Vv | tee _supplemental-receipts/rustc.txt
+          cargo +1.87.0 test -p gba-supplemental -- --test-threads=2 2>&1 | tee _supplemental-receipts/tests.log
+          cargo +1.87.0 build -p gba-supplemental 2>&1 | tee _supplemental-receipts/build.log
+          cp Cargo.lock _supplemental-receipts/Cargo.lock
+          sha256sum target/debug/gba-supplemental > _supplemental-receipts/binary.sha256
+          git rev-parse HEAD > _supplemental-receipts/source-commit.txt
+          python3 -m unittest discover -s supplemental/tests -v 2>&1 | tee _supplemental-receipts/python-tests.log
+      - name: Enforce formatting and lint
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p _supplemental-receipts
+          set +e
+          cargo +1.87.0 fmt -p gba-supplemental -- --check > _supplemental-receipts/format.log 2>&1
+          FORMAT=$?
+          cargo +1.87.0 clippy -p gba-supplemental --all-targets -- -D warnings > _supplemental-receipts/clippy.log 2>&1
+          LINT=$?
+          cat _supplemental-receipts/format.log _supplemental-receipts/clippy.log
+          test "$FORMAT" = 0 && test "$LINT" = 0
+      - name: Provision the pinned offline runner image
+        run: |
+          docker pull ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+          docker image inspect ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 --format '{{.Id}} {{json .RepoDigests}}' > _supplemental-receipts/container.txt
+      - name: Execute all qualification controls without network or model keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          CID="$PWD/_supplemental-receipts/qualification.cid"
+          trap 'test ! -f "$CID" || docker rm -f "$(cat "$CID")" >/dev/null 2>&1 || true' EXIT
+          timeout --kill-after=15s 300 docker run --rm --cidfile "$CID" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --memory 2g --memory-swap 2g --cpus 2 --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m --user "$(id -u):$(id -g)" -v "$PWD:/src:ro" -v "$PWD/_supplemental-receipts:/out:rw" ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 /src/target/debug/gba-supplemental qualify /out/qualification 2>&1 | tee _supplemental-receipts/qualification.log
+          target/debug/gba-supplemental verify _supplemental-receipts/qualification/good
+          target/debug/gba-supplemental reanalyze _supplemental-receipts/qualification/good _supplemental-receipts/reanalysis.json
+      - name: Observe the shipped reference and baseline on the original ARM fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          target/debug/gba-supplemental counter-rom _supplemental-receipts/counter.gba
+          target/debug/gba-supplemental case --rom _supplemental-receipts/counter.gba > _supplemental-receipts/case.json
+          CID=""
+          trap 'test -z "$CID" || test ! -f "$CID" || docker rm -f "$(cat "$CID")" >/dev/null 2>&1 || true' EXIT
+          for specimen in reference/mesen.wasm candidates/gba-core/gba_core_shim.wasm; do
+            name="$(basename "${specimen%.wasm}")"
+            CID="$PWD/_supplemental-receipts/$name.cid"
+            timeout --kill-after=15s 180 docker run --rm --cidfile "$CID" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --memory 2g --memory-swap 2g --cpus 2 --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m --user "$(id -u):$(id -g)" -v "$PWD:/src:ro" -v "$PWD/_supplemental-receipts:/out:rw" ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 /src/target/debug/gba-supplemental run --candidate "/src/$specimen" --rom /out/counter.gba --case /out/case.json --out "/out/$name" 2>&1 | tee "_supplemental-receipts/$name.log"
+            target/debug/gba-supplemental verify "_supplemental-receipts/$name"
+            cat "_supplemental-receipts/$name/measurements.json"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: supplemental-evidence-${{ github.sha }}
+          path: _supplemental-receipts/
+          retention-days: 14
+          if-no-files-found: error

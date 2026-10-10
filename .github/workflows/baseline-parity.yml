@@ -1,0 +1,67 @@
+name: Original score parity
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: baseline-parity-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          lfs: true
+          persist-credentials: false
+      - name: Provision tools
+        run: |
+          rustup toolchain install 1.87.0 --profile minimal
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
+          docker pull ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+      - name: Test the validators and inspect every required baseline input
+        run: |
+          mkdir _baseline-receipts
+          python3 -m unittest discover -s supplemental/tests -v 2>&1 | tee _baseline-receipts/python-tests.log
+          timeout 180 python3 supplemental/baseline.py snapshot . _baseline-receipts/source-identity.json
+          timeout 180 python3 supplemental/baseline.py preflight . _baseline-receipts/corpus-preflight.json
+      - name: Build original and fork scorers with recorded dependency resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.87.0 build --release -p grader -p gba-supplemental 2>&1 | tee _baseline-receipts/fork-build.log
+          mkdir -p _baseline-receipts/bin
+          cp target/release/grader _baseline-receipts/bin/fork-grader
+          cp Cargo.lock _baseline-receipts/fork-Cargo.lock
+          GIT_LFS_SKIP_SMUDGE=1 git worktree add --detach _baseline-stock 92b585e5a0f6c7533bf69b9a4348b517a1b735e0
+          git -C _baseline-stock lfs checkout
+          cp Cargo.lock _baseline-stock/Cargo.lock
+          (cd _baseline-stock && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo +1.87.0 build --offline --release -p grader) 2>&1 | tee _baseline-receipts/stock-build.log
+          cp target/release/grader _baseline-receipts/bin/stock-grader
+          cp _baseline-stock/Cargo.lock _baseline-receipts/stock-Cargo.lock
+          cargo +1.87.0 tree -p grader -e features > _baseline-receipts/fork-dependency-tree.txt
+          (cd _baseline-stock && cargo +1.87.0 tree --offline -p grader -e features) > _baseline-receipts/stock-dependency-tree.txt
+          sed "s|$PWD/_baseline-stock|SOURCE|g; s|$PWD|SOURCE|g" _baseline-receipts/stock-dependency-tree.txt > _baseline-receipts/stock-tree-normalized.txt
+          sed "s|$PWD|SOURCE|g" _baseline-receipts/fork-dependency-tree.txt > _baseline-receipts/fork-tree-normalized.txt
+          diff -u _baseline-receipts/stock-tree-normalized.txt _baseline-receipts/fork-tree-normalized.txt
+          rustc +1.87.0 -Vv > _baseline-receipts/rustc.txt
+          sha256sum _baseline-receipts/bin/fork-grader _baseline-receipts/bin/stock-grader > _baseline-receipts/scorer-binaries.sha256
+          target/release/gba-supplemental fixture blank _baseline-receipts/blank.wasm
+      - name: Grade both artifacts with stock repetitions and the fork
+        shell: bash
+        run: bash supplemental/baseline-ci.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: baseline-parity-${{ github.sha }}
+          path: _baseline-receipts/
+          retention-days: 14
+          if-no-files-found: error
